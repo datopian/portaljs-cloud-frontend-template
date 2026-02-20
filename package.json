@@ -22,7 +22,7 @@
     "@heroicons/react": "^2.0.11",
     "@portaljs/ckan": "^0.1.0",
     "@portaljs/ckan-api-client-js": "^1.4.0",
-    "@portaljs/components": "0.3.1",
+    "@portaljs/components": "^0.3.3",
     "@tailwindcss/line-clamp": "^0.4.2",
     "@tailwindcss/typography": "^0.5.10",
     "clsx": "^2.1.1",
