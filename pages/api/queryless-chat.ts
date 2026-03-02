@@ -11,6 +11,7 @@ type RequestBody = {
   sessionId?: string;
   siteUrl?: string;
   currentPath?: string;
+  stream?: boolean;
 };
 
 export default async function handler(
@@ -46,6 +47,7 @@ export default async function handler(
     sessionId,
     siteUrl: rawSiteUrl = "",
     currentPath = "",
+    stream = false,
   } =
     (req.body || {}) as RequestBody;
 
@@ -77,7 +79,7 @@ export default async function handler(
       },
       body: JSON.stringify({
         model: querylessModel,
-        stream: false,
+        stream: Boolean(stream),
         user: sessionId,
         messages: [
           {
@@ -88,6 +90,44 @@ export default async function handler(
         ],
       }),
     });
+
+    if (stream) {
+      if (!upstream.ok) {
+        const details = await upstream.text();
+        res.status(upstream.status).json({
+          error: "Queryless upstream request failed",
+          details,
+        });
+        return;
+      }
+
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+
+      if (!upstream.body) {
+        res.write(`data: ${JSON.stringify({ error: "Missing upstream stream body" })}\n\n`);
+        res.write("data: [DONE]\n\n");
+        res.end();
+        return;
+      }
+
+      const reader = upstream.body.getReader();
+      const decoder = new TextDecoder();
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value) {
+            res.write(decoder.decode(value, { stream: true }));
+          }
+        }
+      } finally {
+        res.end();
+      }
+      return;
+    }
 
     const contentType = upstream.headers.get("content-type") || "";
     const data = contentType.includes("application/json")

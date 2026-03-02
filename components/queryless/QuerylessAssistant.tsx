@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/router";
+import Link from "next/link";
 import { RiDeleteBinLine, RiSparkling2Line } from "react-icons/ri";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -123,6 +124,26 @@ function extractChartPayload(content: string): {
     .replace(legacyChartFencePattern, "")
     .trim();
   return { markdown: markdown || "Here is the chart:", chart };
+}
+
+function extractTextFromPayload(payload: any): string {
+  return (
+    payload?.choices?.[0]?.delta?.content ||
+    payload?.choices?.[0]?.message?.content ||
+    payload?.choices?.[0]?.text ||
+    payload?.message ||
+    payload?.result ||
+    payload?.output ||
+    payload?.answer ||
+    ""
+  );
+}
+
+function isLocalLink(href: string | undefined): boolean {
+  if (!href) return false;
+  if (href.startsWith("/")) return true;
+  if (typeof window === "undefined") return false;
+  return href.startsWith(window.location.origin);
 }
 
 export default function QuerylessAssistant() {
@@ -321,13 +342,23 @@ export default function QuerylessAssistant() {
     const question = input.trim();
     if (!question || isSending) return;
     hasExchangeSinceLastPageChangeRef.current = true;
+    const assistantMessageId = `assistant-${Date.now()}`;
 
-    const nextMessages: ChatMessage[] = [
+    const requestMessages: ChatMessage[] = [
       ...messages,
       {
         id: `user-${Date.now()}`,
         role: "user",
         content: question,
+      },
+    ];
+
+    const nextMessages: ChatMessage[] = [
+      ...requestMessages,
+      {
+        id: assistantMessageId,
+        role: "assistant",
+        content: "",
       },
     ];
 
@@ -347,7 +378,8 @@ export default function QuerylessAssistant() {
           pageDirective: context.pageDirective,
           siteUrl: window.location.origin,
           currentPath: context.path,
-          messages: nextMessages.map(m => ({ role: m.role, content: m.content })),
+          stream: true,
+          messages: requestMessages.map(m => ({ role: m.role, content: m.content })),
         }),
       });
 
@@ -357,50 +389,112 @@ export default function QuerylessAssistant() {
         throw new Error(`${reason} (${response.status})`);
       }
 
-      const data = await response.json();
-      const answer =
-        data?.answer ||
-        data?.message ||
-        data?.result ||
-        data?.output ||
-        data?.choices?.[0]?.message?.content ||
-        data?.choices?.[0]?.text;
+      const contentType = response.headers.get("content-type") || "";
+      let answer = "";
+      let finalPayload: any = null;
+
+      if (contentType.includes("text/event-stream") && response.body) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let isDone = false;
+
+        while (!isDone) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (!value) continue;
+
+          buffer += decoder.decode(value, { stream: true });
+          const events = buffer.split("\n\n");
+          buffer = events.pop() || "";
+
+          for (const event of events) {
+            const lines = event
+              .split("\n")
+              .map(line => line.trim())
+              .filter(Boolean);
+
+            for (const line of lines) {
+              if (!line.startsWith("data:")) continue;
+              const raw = line.replace(/^data:\s*/, "");
+              if (raw === "[DONE]") {
+                isDone = true;
+                break;
+              }
+
+              try {
+                const payload = JSON.parse(raw);
+                finalPayload = payload;
+                const token = extractTextFromPayload(payload);
+                if (!token) continue;
+                answer += token;
+                const partial = answer;
+                setMessages(prev =>
+                  prev.map(message =>
+                    message.id === assistantMessageId
+                      ? { ...message, content: partial }
+                      : message
+                  )
+                );
+              } catch {
+                // Ignore non-JSON stream frames
+              }
+            }
+          }
+        }
+      } else {
+        const data = await response.json();
+        finalPayload = data;
+        answer = extractTextFromPayload(data);
+      }
+
       const directChart =
-        parseChartSpec(data?.chart) ||
-        parseChartSpec(data?.artifact) ||
-        parseChartSpec(data?.artifacts?.[0]);
+        parseChartSpec(finalPayload?.chart) ||
+        parseChartSpec(finalPayload?.artifact) ||
+        parseChartSpec(finalPayload?.artifacts?.[0]);
 
       if (!answer || typeof answer !== "string") {
         if (directChart) {
-          setMessages(prev => [
-            ...prev,
-            {
-              id: `assistant-${Date.now()}`,
-              role: "assistant",
-              content: "Here is the chart:",
-              chart: directChart,
-            },
-          ]);
+          setMessages(prev =>
+            prev.map(message =>
+              message.id === assistantMessageId
+                ? {
+                    ...message,
+                    content: "Here is the chart:",
+                    chart: directChart,
+                  }
+                : message
+            )
+          );
           return;
         }
         throw new Error("Queryless response did not include a text answer");
       }
-      const parsedAnswer = extractChartPayload(answer);
 
-      setMessages(prev => [
-        ...prev,
-        {
-          id: `assistant-${Date.now()}`,
-          role: "assistant",
-          content: parsedAnswer.markdown,
-          chart: parsedAnswer.chart || directChart || undefined,
-        },
-      ]);
+      const parsedAnswer = extractChartPayload(answer);
+      setMessages(prev =>
+        prev.map(message =>
+          message.id === assistantMessageId
+            ? {
+                ...message,
+                content: parsedAnswer.markdown,
+                chart: parsedAnswer.chart || directChart || undefined,
+              }
+            : message
+        )
+      );
     } catch (err) {
       const message =
         err instanceof Error
           ? err.message
           : "Unexpected error when contacting Queryless";
+      setMessages(prev =>
+        prev.map(item =>
+          item.id === assistantMessageId && !item.content
+            ? { ...item, content: "I ran into an issue while replying." }
+            : item
+        )
+      );
       setError(message);
     } finally {
       setIsSending(false);
@@ -491,93 +585,106 @@ export default function QuerylessAssistant() {
                 <div className="flex h-full flex-col">
                   <div className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
                     {messages.map(message => (
-                      <div
-                        key={message.id}
-                        className={`${
-                          message.variant === "context"
-                            ? "mx-auto w-fit rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-500"
-                            : `max-w-[90%] rounded-2xl px-3 py-2 text-sm ${
-                                message.role === "assistant"
-                                  ? "bg-slate-100 text-slate-800"
-                                  : "ml-auto bg-sky-600 text-white"
-                              }`
-                        }`}
-                      >
-                        {message.role === "assistant" && message.variant !== "context" ? (
-                          <>
-                            <ReactMarkdown
-                              remarkPlugins={[remarkGfm]}
-                              components={{
-                                p: ({ node, ...props }) => (
-                                  <p className="mb-2 last:mb-0" {...props} />
-                                ),
-                              a: ({ node, ...props }) => (
-                                  <a
-                                    {...props}
-                                    className="underline text-sky-700 hover:text-sky-800"
-                                    target={
-                                      typeof props.href === "string" &&
-                                      (props.href.startsWith("/") ||
-                                        props.href.startsWith(window.location.origin))
-                                        ? "_self"
-                                        : "_blank"
-                                    }
-                                    rel={
-                                      typeof props.href === "string" &&
-                                      (props.href.startsWith("/") ||
-                                        props.href.startsWith(window.location.origin))
-                                        ? undefined
-                                        : "noopener noreferrer"
-                                    }
-                                  />
-                                ),
-                                ul: ({ node, ...props }) => (
-                                  <ul className="mb-2 list-disc pl-5 last:mb-0" {...props} />
-                                ),
-                                ol: ({ node, ...props }) => (
-                                  <ol className="mb-2 list-decimal pl-5 last:mb-0" {...props} />
-                                ),
-                                li: ({ node, ...props }) => (
-                                  <li className="mb-1 last:mb-0" {...props} />
-                                ),
-                                table: ({ node, ...props }) => (
-                                  <div className="mb-2 overflow-x-auto last:mb-0">
-                                    <table
-                                      className="w-full border-collapse border border-slate-300 text-xs"
-                                      {...props}
-                                    />
-                                  </div>
-                                ),
-                                thead: ({ node, ...props }) => (
-                                  <thead className="bg-slate-200" {...props} />
-                                ),
-                                th: ({ node, ...props }) => (
-                                  <th
-                                    className="border border-slate-300 px-2 py-1 text-left font-semibold"
-                                    {...props}
-                                  />
-                                ),
-                                td: ({ node, ...props }) => (
-                                  <td className="border border-slate-300 px-2 py-1" {...props} />
-                                ),
-                                code: ({ node, inline, ...props }) =>
-                                  inline ? (
-                                    <code className="rounded bg-slate-200 px-1 py-0.5" {...props} />
-                                  ) : (
-                                    <pre className="mb-2 overflow-x-auto rounded bg-slate-900 p-2 text-slate-100 last:mb-0">
-                                      <code {...props} />
-                                    </pre>
-                                  ),
-                              }}
-                            >
-                              {message.content}
-                            </ReactMarkdown>
-                            {message.chart && <ChartRenderer chart={message.chart} />}
-                          </>
-                        ) : (
-                          message.content
-                        )}
-                      </div>
+                      (() => {
+                        const isEmptyAssistantMessage =
+                          message.role === "assistant" &&
+                          message.variant !== "context" &&
+                          !message.chart &&
+                          !message.content.trim();
+
+                        if (isEmptyAssistantMessage) {
+                          return null;
+                        }
+
+                        return (
+                          <div
+                            key={message.id}
+                            className={`${
+                              message.variant === "context"
+                                ? "mx-auto w-fit rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-500"
+                                : `max-w-[90%] rounded-2xl px-3 py-2 text-sm ${
+                                    message.role === "assistant"
+                                      ? "bg-slate-100 text-slate-800"
+                                      : "ml-auto bg-sky-600 text-white"
+                                  }`
+                            }`}
+                          >
+                            {message.role === "assistant" && message.variant !== "context" ? (
+                              <>
+                                <ReactMarkdown
+                                  remarkPlugins={[remarkGfm]}
+                                  components={{
+                                    p: ({ node, ...props }) => (
+                                      <p className="mb-2 last:mb-0" {...props} />
+                                    ),
+                                    a: ({ node, ...props }) =>
+                                      isLocalLink(props.href) ? (
+                                        <Link
+                                          href={props.href || "/"}
+                                          className="underline text-sky-700 hover:text-sky-800"
+                                        >
+                                          {props.children}
+                                        </Link>
+                                      ) : (
+                                        <a
+                                          {...props}
+                                          className="underline text-sky-700 hover:text-sky-800"
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                        />
+                                      ),
+                                    ul: ({ node, ...props }) => (
+                                      <ul className="mb-2 list-disc pl-5 last:mb-0" {...props} />
+                                    ),
+                                    ol: ({ node, ...props }) => (
+                                      <ol className="mb-2 list-decimal pl-5 last:mb-0" {...props} />
+                                    ),
+                                    li: ({ node, ...props }) => (
+                                      <li className="mb-1 last:mb-0" {...props} />
+                                    ),
+                                    table: ({ node, ...props }) => (
+                                      <div className="mb-2 overflow-x-auto last:mb-0">
+                                        <table
+                                          className="w-full border-collapse border border-slate-300 text-xs"
+                                          {...props}
+                                        />
+                                      </div>
+                                    ),
+                                    thead: ({ node, ...props }) => (
+                                      <thead className="bg-slate-200" {...props} />
+                                    ),
+                                    th: ({ node, ...props }) => (
+                                      <th
+                                        className="border border-slate-300 px-2 py-1 text-left font-semibold"
+                                        {...props}
+                                      />
+                                    ),
+                                    td: ({ node, ...props }) => (
+                                      <td className="border border-slate-300 px-2 py-1" {...props} />
+                                    ),
+                                    code: ({ node, inline, ...props }) =>
+                                      inline ? (
+                                        <code
+                                          className="rounded bg-slate-200 px-1 py-0.5"
+                                          {...props}
+                                        />
+                                      ) : (
+                                        <pre className="mb-2 overflow-x-auto rounded bg-slate-900 p-2 text-slate-100 last:mb-0">
+                                          <code {...props} />
+                                        </pre>
+                                      ),
+                                  }}
+                                >
+                                  {message.content}
+                                </ReactMarkdown>
+                                {message.chart && <ChartRenderer chart={message.chart} />}
+                              </>
+                            ) : (
+                              message.content
+                            )}
+                          </div>
+                        );
+                      })()
                     ))}
                     {isSending && (
                       <div className="max-w-[90%] rounded-2xl bg-slate-100 px-3 py-2 text-sm text-slate-600">
