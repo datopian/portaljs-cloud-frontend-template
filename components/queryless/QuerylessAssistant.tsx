@@ -161,6 +161,7 @@ export default function QuerylessAssistant() {
   const [error, setError] = useState<string | null>(null);
   const [viewingNotice, setViewingNotice] = useState("Viewing search");
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const previousMessageCountRef = useRef(0);
   const sessionIdRef = useRef<string>(createSessionId());
   const lastContextPathRef = useRef<string | null>(null);
   const lastContextMessageIdRef = useRef<string | null>(null);
@@ -304,7 +305,12 @@ export default function QuerylessAssistant() {
   }, [context.path, viewingNotice]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const didAddNewMessage = messages.length > previousMessageCountRef.current;
+    const behavior: ScrollBehavior =
+      isSending || !didAddNewMessage ? "auto" : "smooth";
+
+    messagesEndRef.current?.scrollIntoView({ behavior, block: "end" });
+    previousMessageCountRef.current = messages.length;
   }, [messages, isSending]);
 
   useEffect(() => {

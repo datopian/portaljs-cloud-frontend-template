@@ -50,6 +50,14 @@ export default function VegaSpecRenderer({ specText }: { specText: string }) {
   const spec = useMemo(() => {
     if (!parsedSpec) return null;
     const normalizedSpec = JSON.parse(JSON.stringify(parsedSpec));
+    const markType =
+      typeof normalizedSpec.mark === "string"
+        ? normalizedSpec.mark
+        : normalizedSpec.mark?.type;
+    const isBarChart = markType === "bar";
+    const valueCount = Array.isArray(normalizedSpec.data?.values)
+      ? normalizedSpec.data.values.length
+      : null;
 
     if (!normalizedSpec.width) {
       normalizedSpec.width = "container";
@@ -69,7 +77,15 @@ export default function VegaSpecRenderer({ specText }: { specText: string }) {
       !normalizedSpec.hconcat &&
       !normalizedSpec.vconcat
     ) {
-      normalizedSpec.height = 220;
+      if (isBarChart && valueCount) {
+        normalizedSpec.height = Math.max(220, Math.min(420, valueCount * 28));
+      } else {
+        normalizedSpec.height = 220;
+      }
+    }
+
+    if (typeof normalizedSpec.height === "number") {
+      normalizedSpec.height = Math.min(normalizedSpec.height, 420);
     }
 
     return normalizedSpec;
@@ -129,7 +145,7 @@ export default function VegaSpecRenderer({ specText }: { specText: string }) {
           Could not render chart: {renderError}
         </div>
       ) : (
-        <div ref={containerRef} className="min-h-[320px] w-full" />
+        <div ref={containerRef} className="max-h-[420px] min-h-[220px] w-full overflow-auto" />
       )}
     </div>
   );
