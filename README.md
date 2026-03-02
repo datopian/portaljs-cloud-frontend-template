@@ -68,9 +68,6 @@ Then, you can start customizing it locally by following the development instruct
 # This is the URL of the CKAN instance. Use the example value if you are using PortalJS Cloud.
 NEXT_PUBLIC_DMS=https://api.cloud.portaljs.com/@my-portal-main-org-name
 
-# Optional frontend base URL used by Queryless system context (Site:)
-NEXT_PUBLIC_SITE_URL=https://your-portal.example.com
-
 # Optional Queryless AI assistant integration
 # Set to true to display the floating AI button + right drawer chat
 NEXT_PUBLIC_QUERYLESS_ENABLED=false

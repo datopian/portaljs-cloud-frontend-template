@@ -345,6 +345,8 @@ export default function QuerylessAssistant() {
         body: JSON.stringify({
           sessionId: sessionIdRef.current,
           pageDirective: context.pageDirective,
+          siteUrl: window.location.origin,
+          currentPath: context.path,
           messages: nextMessages.map(m => ({ role: m.role, content: m.content })),
         }),
       });
@@ -509,12 +511,24 @@ export default function QuerylessAssistant() {
                                 p: ({ node, ...props }) => (
                                   <p className="mb-2 last:mb-0" {...props} />
                                 ),
-                                a: ({ node, ...props }) => (
+                              a: ({ node, ...props }) => (
                                   <a
                                     {...props}
                                     className="underline text-sky-700 hover:text-sky-800"
-                                    target="_blank"
-                                    rel="noopener noreferrer"
+                                    target={
+                                      typeof props.href === "string" &&
+                                      (props.href.startsWith("/") ||
+                                        props.href.startsWith(window.location.origin))
+                                        ? "_self"
+                                        : "_blank"
+                                    }
+                                    rel={
+                                      typeof props.href === "string" &&
+                                      (props.href.startsWith("/") ||
+                                        props.href.startsWith(window.location.origin))
+                                        ? undefined
+                                        : "noopener noreferrer"
+                                    }
                                   />
                                 ),
                                 ul: ({ node, ...props }) => (

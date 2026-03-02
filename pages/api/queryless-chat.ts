@@ -9,6 +9,8 @@ type RequestBody = {
   messages?: ChatMessage[];
   pageDirective?: string;
   sessionId?: string;
+  siteUrl?: string;
+  currentPath?: string;
 };
 
 export default async function handler(
@@ -27,7 +29,6 @@ export default async function handler(
   const querylessModel =
     process.env.QUERYLESS_MODEL || `openclaw:${querylessAgentId}`;
   const portalUrl = process.env.NEXT_PUBLIC_DMS || "";
-  const configuredSiteUrl = process.env.NEXT_PUBLIC_SITE_URL;
 
   if (!querylessUrl) {
     res.status(500).json({ error: "Missing QUERYLESS_URL server environment variable" });
@@ -39,7 +40,13 @@ export default async function handler(
     return;
   }
 
-  const { messages = [], pageDirective = "search", sessionId } =
+  const {
+    messages = [],
+    pageDirective = "search",
+    sessionId,
+    siteUrl: rawSiteUrl = "",
+    currentPath = "",
+  } =
     (req.body || {}) as RequestBody;
 
   if (!Array.isArray(messages)) {
@@ -48,12 +55,10 @@ export default async function handler(
   }
 
   try {
-    const forwardedProto = (req.headers["x-forwarded-proto"] as string) || "http";
-    const forwardedHost = (req.headers["x-forwarded-host"] as string) || req.headers.host || "";
-    const derivedSiteUrl = forwardedHost
-      ? `${forwardedProto}://${forwardedHost}`
-      : "";
-    const siteUrl = configuredSiteUrl || derivedSiteUrl;
+    const siteUrl =
+      typeof rawSiteUrl === "string" && rawSiteUrl.trim()
+        ? rawSiteUrl.trim()
+        : "http://localhost:3000";
     const routesBlock = [
       "Routes:",
       "  dataset: /@{org}/{name}",
@@ -77,7 +82,7 @@ export default async function handler(
         messages: [
           {
             role: "system",
-            content: `Portal: ${portalUrl}\nSite: ${siteUrl}\nPage: ${pageDirective}\n${routesBlock}`,
+            content: `Portal: ${portalUrl}\nSite: ${siteUrl}\nPage: ${pageDirective}\nCurrentPath: ${currentPath}\n${routesBlock}`,
           },
           ...messages,
         ],
