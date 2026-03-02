@@ -10,6 +10,7 @@ import SEO from "../next-seo.config";
 import Loader from "../components/_shared/Loader";
 
 import ThemeProvider from "../components/theme/theme-provider";
+import QuerylessAssistant from "../components/queryless/QuerylessAssistant";
 
 import { Inter, Montserrat, Poppins } from "next/font/google";
 import { cn } from "@/lib/utils";
@@ -53,11 +54,15 @@ function MyApp({ Component, pageProps }: AppProps) {
     };
   }, [router.events]);
   return (
-    <div className={cn(poppins.variable, montserrat.variable, inter.variable)}>
+    <div
+      id="app-shell"
+      className={cn(poppins.variable, montserrat.variable, inter.variable)}
+    >
       <ThemeProvider themeName={theme}>
         <DefaultSeo {...SEO} />
         <Loader />
         <Component {...pageProps} />
+        <QuerylessAssistant />
       </ThemeProvider>
     </div>
   );
