@@ -25,10 +25,7 @@ export default async function handler(
 
   const querylessUrl = process.env.QUERYLESS_URL;
   const querylessToken = process.env.QUERYLESS_TOKEN;
-  const querylessAgentId =
-    process.env.QUERYLESS_AGENT_ID || "queryless-portaljs-demo";
-  const querylessModel =
-    process.env.QUERYLESS_MODEL || `openclaw:${querylessAgentId}`;
+  const querylessModel = process.env.QUERYLESS_MODEL;
   const portalUrl = process.env.NEXT_PUBLIC_DMS || "";
 
   if (!querylessUrl) {
@@ -38,6 +35,13 @@ export default async function handler(
 
   if (!querylessToken) {
     res.status(500).json({ error: "Missing QUERYLESS_TOKEN server environment variable" });
+    return;
+  }
+
+  if (!querylessModel) {
+    res.status(500).json({
+      error: "Missing QUERYLESS_MODEL server environment variable",
+    });
     return;
   }
 
@@ -75,7 +79,6 @@ export default async function handler(
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${querylessToken}`,
-        "x-openclaw-agent-id": querylessAgentId,
       },
       body: JSON.stringify({
         model: querylessModel,
@@ -94,6 +97,13 @@ export default async function handler(
     if (stream) {
       if (!upstream.ok) {
         const details = await upstream.text();
+        console.error("[Queryless API] Upstream streaming request failed", {
+          status: upstream.status,
+          statusText: upstream.statusText,
+          details,
+          pageDirective,
+          currentPath,
+        });
         res.status(upstream.status).json({
           error: "Queryless upstream request failed",
           details,
@@ -107,6 +117,11 @@ export default async function handler(
       res.setHeader("X-Accel-Buffering", "no");
 
       if (!upstream.body) {
+        console.error("[Queryless API] Missing upstream stream body", {
+          status: upstream.status,
+          pageDirective,
+          currentPath,
+        });
         res.write(`data: ${JSON.stringify({ error: "Missing upstream stream body" })}\n\n`);
         res.write("data: [DONE]\n\n");
         res.end();
@@ -135,6 +150,13 @@ export default async function handler(
       : await upstream.text();
 
     if (!upstream.ok) {
+      console.error("[Queryless API] Upstream request failed", {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        details: data,
+        pageDirective,
+        currentPath,
+      });
       res.status(upstream.status).json({
         error: "Queryless upstream request failed",
         details: data,
@@ -144,7 +166,11 @@ export default async function handler(
 
     res.status(200).json(data);
   } catch (error) {
-    console.error(error);
+    console.error("[Queryless API] Unexpected error while contacting Queryless", {
+      error,
+      pageDirective: req.body?.pageDirective,
+      currentPath: req.body?.currentPath,
+    });
     res.status(500).json({ error: "Unexpected error while contacting Queryless" });
   }
 }

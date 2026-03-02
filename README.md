@@ -78,10 +78,7 @@ NEXT_PUBLIC_QUERYLESS_API_ROUTE=/api/queryless-chat
 # Server-side Queryless API config (keep these non-public)
 QUERYLESS_URL=
 QUERYLESS_TOKEN=
-
-# Optional agent routing/model overrides
-QUERYLESS_AGENT_ID=queryless-portaljs-demo
-QUERYLESS_MODEL=openclaw:queryless-portaljs-demo
+QUERYLESS_MODEL=agent:your-agent-id
 ```
 
 4) Run `npm run dev` to start the development server

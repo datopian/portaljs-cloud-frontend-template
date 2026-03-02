@@ -4,7 +4,7 @@ import Link from "next/link";
 import { RiDeleteBinLine, RiSparkling2Line } from "react-icons/ri";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import ChartRenderer, { ChartSpec, parseChartSpec } from "./ChartRenderer";
+import VegaSpecRenderer, { parseVegaSpecText } from "./VegaSpecRenderer";
 
 const QUERYLESS_ENABLED = process.env.NEXT_PUBLIC_QUERYLESS_ENABLED === "true";
 const QUERYLESS_API_ROUTE =
@@ -21,7 +21,6 @@ type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
-  chart?: ChartSpec;
   variant?: "default" | "context";
 };
 
@@ -93,43 +92,27 @@ function getFallbackViewingNotice(pageDirective: string): string {
   return "Viewing search";
 }
 
-function extractChartPayload(content: string): {
-  markdown: string;
-  chart?: ChartSpec;
-} {
-  const chartFencePattern = /```chart\s*([\s\S]*?)```/i;
-  const legacyChartFencePattern = /```queryless_chart\s*([\s\S]*?)```/i;
-  const match = chartFencePattern.exec(content) || legacyChartFencePattern.exec(content);
-
-  if (!match) {
-    return { markdown: content };
-  }
-
-  const rawJson = match[1]?.trim();
-  let parsed: unknown = null;
-
-  try {
-    parsed = rawJson ? JSON.parse(rawJson) : null;
-  } catch {
-    return { markdown: content };
-  }
-
-  const chart = parseChartSpec(parsed);
-  if (!chart) {
-    return { markdown: content };
-  }
-
-  const markdown = content
-    .replace(chartFencePattern, "")
-    .replace(legacyChartFencePattern, "")
-    .trim();
-  return { markdown: markdown || "Here is the chart:", chart };
-}
-
 function extractTextFromPayload(payload: any): string {
+  const deltaContent = payload?.choices?.[0]?.delta?.content;
+  const messageContent = payload?.choices?.[0]?.message?.content;
+
+  const normalizedDelta =
+    Array.isArray(deltaContent)
+      ? deltaContent
+          .map((item: any) => (typeof item === "string" ? item : item?.text || ""))
+          .join("")
+      : deltaContent;
+
+  const normalizedMessage =
+    Array.isArray(messageContent)
+      ? messageContent
+          .map((item: any) => (typeof item === "string" ? item : item?.text || ""))
+          .join("")
+      : messageContent;
+
   return (
-    payload?.choices?.[0]?.delta?.content ||
-    payload?.choices?.[0]?.message?.content ||
+    normalizedDelta ||
+    normalizedMessage ||
     payload?.choices?.[0]?.text ||
     payload?.message ||
     payload?.result ||
@@ -146,6 +129,21 @@ function isLocalLink(href: string | undefined): boolean {
   return href.startsWith(window.location.origin);
 }
 
+function maskIncompleteChartBlock(content: string): string {
+  const chartStart = content.lastIndexOf("```chart");
+  const vegaStart = content.lastIndexOf("```vega");
+  const blockStart = Math.max(chartStart, vegaStart);
+
+  if (blockStart === -1) return content;
+
+  const closingFence = content.indexOf("```", blockStart + 3);
+  if (closingFence === -1) {
+    return content.slice(0, blockStart).trimEnd();
+  }
+
+  return content;
+}
+
 export default function QuerylessAssistant() {
   const router = useRouter();
   const [isOpen, setIsOpen] = useState(false);
@@ -155,7 +153,7 @@ export default function QuerylessAssistant() {
       id: "assistant-welcome",
       role: "assistant",
       content:
-        "Hi! I’m aware of the page you’re currently viewing. Ask me questions about the data here, or ask me to generate a chart.",
+        "Hi, I’m Queryless 👋\n\nAsk questions in plain English. No SQL needed.\n\nTry things like:\n- “Are there any datasets about climate change?”\n- “What are the available groups?”\n- “Compare the top 10 by emissions.”\n- “Create a chart for this trend.”\n\nI’m aware of the page you are browsing 👀",
     },
   ]);
   const [input, setInput] = useState("");
@@ -164,7 +162,6 @@ export default function QuerylessAssistant() {
   const [viewingNotice, setViewingNotice] = useState("Viewing search");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const sessionIdRef = useRef<string>(createSessionId());
-  const lastPageDirectiveRef = useRef<string>("");
   const lastContextPathRef = useRef<string | null>(null);
   const lastContextMessageIdRef = useRef<string | null>(null);
   const hasExchangeSinceLastPageChangeRef = useRef(false);
@@ -211,17 +208,6 @@ export default function QuerylessAssistant() {
     }),
     [router.asPath, router.pathname]
   );
-
-  useEffect(() => {
-    if (!lastPageDirectiveRef.current) {
-      lastPageDirectiveRef.current = context.pageDirective;
-      return;
-    }
-    if (lastPageDirectiveRef.current !== context.pageDirective) {
-      sessionIdRef.current = createSessionId();
-      lastPageDirectiveRef.current = context.pageDirective;
-    }
-  }, [context.pageDirective]);
 
   useEffect(() => {
     const fallback = getFallbackViewingNotice(context.pageDirective);
@@ -384,20 +370,29 @@ export default function QuerylessAssistant() {
       });
 
       if (!response.ok) {
-        const details = await response.json().catch(() => null);
-        const reason = details?.error || "Queryless request failed";
+        const details = await response
+          .json()
+          .catch(async () => {
+            const text = await response.text().catch(() => "");
+            return text ? { details: text } : null;
+          });
+        const reason =
+          details?.error ||
+          details?.details ||
+          details?.message ||
+          "Queryless request failed";
         throw new Error(`${reason} (${response.status})`);
       }
 
       const contentType = response.headers.get("content-type") || "";
       let answer = "";
-      let finalPayload: any = null;
 
       if (contentType.includes("text/event-stream") && response.body) {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
         let isDone = false;
+        let streamError: string | null = null;
 
         while (!isDone) {
           const { value, done } = await reader.read();
@@ -424,11 +419,17 @@ export default function QuerylessAssistant() {
 
               try {
                 const payload = JSON.parse(raw);
-                finalPayload = payload;
+                if (payload?.error) {
+                  streamError =
+                    typeof payload.error === "string"
+                      ? payload.error
+                      : payload.error?.message || "Streaming response error";
+                  continue;
+                }
                 const token = extractTextFromPayload(payload);
                 if (!token) continue;
                 answer += token;
-                const partial = answer;
+                const partial = maskIncompleteChartBlock(answer);
                 setMessages(prev =>
                   prev.map(message =>
                     message.id === assistantMessageId
@@ -442,48 +443,35 @@ export default function QuerylessAssistant() {
             }
           }
         }
+
+        if (streamError) {
+          throw new Error(streamError);
+        }
       } else {
         const data = await response.json();
-        finalPayload = data;
         answer = extractTextFromPayload(data);
       }
 
-      const directChart =
-        parseChartSpec(finalPayload?.chart) ||
-        parseChartSpec(finalPayload?.artifact) ||
-        parseChartSpec(finalPayload?.artifacts?.[0]);
-
       if (!answer || typeof answer !== "string") {
-        if (directChart) {
-          setMessages(prev =>
-            prev.map(message =>
-              message.id === assistantMessageId
-                ? {
-                    ...message,
-                    content: "Here is the chart:",
-                    chart: directChart,
-                  }
-                : message
-            )
-          );
-          return;
-        }
         throw new Error("Queryless response did not include a text answer");
       }
-
-      const parsedAnswer = extractChartPayload(answer);
       setMessages(prev =>
         prev.map(message =>
           message.id === assistantMessageId
             ? {
                 ...message,
-                content: parsedAnswer.markdown,
-                chart: parsedAnswer.chart || directChart || undefined,
+                content: answer,
               }
             : message
         )
       );
     } catch (err) {
+      console.error("[Queryless] Chat request failed", {
+        error: err,
+        pageDirective: context.pageDirective,
+        path: context.path,
+        sessionId: sessionIdRef.current,
+      });
       const message =
         err instanceof Error
           ? err.message
@@ -491,7 +479,7 @@ export default function QuerylessAssistant() {
       setMessages(prev =>
         prev.map(item =>
           item.id === assistantMessageId && !item.content
-            ? { ...item, content: "I ran into an issue while replying." }
+            ? { ...item, content: `I ran into an issue while replying: ${message}` }
             : item
         )
       );
@@ -512,7 +500,7 @@ export default function QuerylessAssistant() {
         id: "assistant-welcome",
         role: "assistant",
         content:
-          "Hi! I’m aware of the page you’re currently viewing. Ask me questions about the data here, or ask me to generate a chart.",
+          "Hi, I’m Queryless 👋\n\nAsk questions in plain English. No SQL needed.\n\nTry things like:\n- “Are there any datasets about climate change?”\n- “What are the available groups?”\n- “Compare the top 10 by emissions.”\n- “Create a chart for this trend.”\n\nI’m aware of the page you are browsing 👀",
       },
       {
         id: contextMessageId,
@@ -589,8 +577,11 @@ export default function QuerylessAssistant() {
                         const isEmptyAssistantMessage =
                           message.role === "assistant" &&
                           message.variant !== "context" &&
-                          !message.chart &&
                           !message.content.trim();
+                        const containsChartBlock =
+                          message.role === "assistant" &&
+                          (message.content.includes("```chart") ||
+                            message.content.includes("```vega"));
 
                         if (isEmptyAssistantMessage) {
                           return null;
@@ -602,7 +593,7 @@ export default function QuerylessAssistant() {
                             className={`${
                               message.variant === "context"
                                 ? "mx-auto w-fit rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-500"
-                                : `max-w-[90%] rounded-2xl px-3 py-2 text-sm ${
+                                : `${containsChartBlock ? "w-full max-w-full" : "max-w-[90%]"} rounded-2xl px-3 py-2 text-sm ${
                                     message.role === "assistant"
                                       ? "bg-slate-100 text-slate-800"
                                       : "ml-auto bg-sky-600 text-white"
@@ -662,22 +653,38 @@ export default function QuerylessAssistant() {
                                     td: ({ node, ...props }) => (
                                       <td className="border border-slate-300 px-2 py-1" {...props} />
                                     ),
-                                    code: ({ node, inline, ...props }) =>
+                                    code: ({ node, inline, className, children, ...props }) =>
                                       inline ? (
                                         <code
                                           className="rounded bg-slate-200 px-1 py-0.5"
                                           {...props}
                                         />
                                       ) : (
-                                        <pre className="mb-2 overflow-x-auto rounded bg-slate-900 p-2 text-slate-100 last:mb-0">
-                                          <code {...props} />
-                                        </pre>
+                                        (() => {
+                                          const language = (className || "").replace("language-", "");
+                                          const isChartBlock =
+                                            language === "chart" || language === "vega";
+
+                                          if (isChartBlock) {
+                                            const specText = String(children).trim();
+                                            if (parseVegaSpecText(specText)) {
+                                              return <VegaSpecRenderer specText={specText} />;
+                                            }
+                                          }
+
+                                          return (
+                                            <pre className="mb-2 overflow-x-auto rounded bg-slate-900 p-2 text-slate-100 last:mb-0">
+                                              <code className={className} {...props}>
+                                                {children}
+                                              </code>
+                                            </pre>
+                                          );
+                                        })()
                                       ),
                                   }}
                                 >
                                   {message.content}
                                 </ReactMarkdown>
-                                {message.chart && <ChartRenderer chart={message.chart} />}
                               </>
                             ) : (
                               message.content

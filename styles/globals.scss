@@ -127,3 +127,13 @@ snap-tabs {
     margin-right: var(--queryless-drawer-width);
   }
 }
+
+.vega-embed,
+.vega-embed > div {
+  max-width: 100%;
+}
+
+.vega-embed svg {
+  display: block;
+  max-width: 100%;
+}
