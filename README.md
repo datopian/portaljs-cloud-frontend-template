@@ -67,6 +67,18 @@ Then, you can start customizing it locally by following the development instruct
 ```bash
 # This is the URL of the CKAN instance. Use the example value if you are using PortalJS Cloud.
 NEXT_PUBLIC_DMS=https://api.cloud.portaljs.com/@my-portal-main-org-name
+
+# Optional Queryless AI assistant integration
+# Set to true to display the floating AI button + right drawer chat
+NEXT_PUBLIC_QUERYLESS_ENABLED=false
+
+# Optional internal API route path used by the chat widget
+NEXT_PUBLIC_QUERYLESS_API_ROUTE=/api/queryless-chat
+
+# Server-side Queryless API config (keep these non-public)
+QUERYLESS_URL=
+QUERYLESS_TOKEN=
+QUERYLESS_MODEL=agent:your-agent-id
 ```
 
 4) Run `npm run dev` to start the development server

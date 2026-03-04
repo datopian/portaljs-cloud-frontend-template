@@ -10,6 +10,7 @@
   --accent: hsl(182, 100%, 38%);
   --indicator-size: 3px;
   --text-active-color: black;
+  --queryless-drawer-width: 560px;
 }
 
 a {
@@ -115,4 +116,24 @@ snap-tabs {
 .react-datepicker__month,
 .react-datepicker__month-text{
   margin:0!important;
+}
+
+#app-shell {
+  transition: margin-right 180ms ease;
+}
+
+@media (min-width: 1024px) {
+  body.queryless-drawer-open #app-shell {
+    margin-right: var(--queryless-drawer-width);
+  }
+}
+
+.vega-embed,
+.vega-embed > div {
+  max-width: 100%;
+}
+
+.vega-embed svg {
+  display: block;
+  max-width: 100%;
 }
