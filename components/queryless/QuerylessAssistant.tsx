@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/router";
 import Link from "next/link";
 import { RiDeleteBinLine, RiSparkling2Line } from "react-icons/ri";
@@ -144,6 +144,98 @@ function maskIncompleteChartBlock(content: string): string {
   return content;
 }
 
+const AssistantMessageBody = memo(function AssistantMessageBody({
+  content,
+}: {
+  content: string;
+}) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        p: ({ node, ...props }) => (
+          <p className="mb-2 last:mb-0" {...props} />
+        ),
+        a: ({ node, ...props }) =>
+          isLocalLink(props.href) ? (
+            <Link
+              href={props.href || "/"}
+              className="underline text-sky-700 hover:text-sky-800"
+            >
+              {props.children}
+            </Link>
+          ) : (
+            <a
+              {...props}
+              className="underline text-sky-700 hover:text-sky-800"
+              target="_blank"
+              rel="noopener noreferrer"
+            />
+          ),
+        ul: ({ node, ...props }) => (
+          <ul className="mb-2 list-disc pl-5 last:mb-0" {...props} />
+        ),
+        ol: ({ node, ...props }) => (
+          <ol className="mb-2 list-decimal pl-5 last:mb-0" {...props} />
+        ),
+        li: ({ node, ...props }) => (
+          <li className="mb-1 last:mb-0" {...props} />
+        ),
+        table: ({ node, ...props }) => (
+          <div className="mb-2 overflow-x-auto last:mb-0">
+            <table
+              className="w-full border-collapse border border-slate-300 text-xs"
+              {...props}
+            />
+          </div>
+        ),
+        thead: ({ node, ...props }) => (
+          <thead className="bg-slate-200" {...props} />
+        ),
+        th: ({ node, ...props }) => (
+          <th
+            className="border border-slate-300 px-2 py-1 text-left font-semibold"
+            {...props}
+          />
+        ),
+        td: ({ node, ...props }) => (
+          <td className="border border-slate-300 px-2 py-1" {...props} />
+        ),
+        code: ({ node, inline, className, children, ...props }) =>
+          inline ? (
+            <code
+              className="rounded bg-slate-200 px-1 py-0.5"
+              {...props}
+            />
+          ) : (
+            (() => {
+              const language = (className || "").replace("language-", "");
+              const isChartBlock =
+                language === "chart" || language === "vega";
+
+              if (isChartBlock) {
+                const specText = String(children).trim();
+                if (parseVegaSpecText(specText)) {
+                  return <VegaSpecRenderer specText={specText} />;
+                }
+              }
+
+              return (
+                <pre className="mb-2 overflow-x-auto rounded bg-slate-900 p-2 text-slate-100 last:mb-0">
+                  <code className={className} {...props}>
+                    {children}
+                  </code>
+                </pre>
+              );
+            })()
+          ),
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+});
+
 export default function QuerylessAssistant() {
   const router = useRouter();
   const [isOpen, setIsOpen] = useState(false);
@@ -160,8 +252,12 @@ export default function QuerylessAssistant() {
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [viewingNotice, setViewingNotice] = useState("Viewing search");
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const previousMessageCountRef = useRef(0);
+  const shouldAutoScrollRef = useRef(true);
+  const streamRafRef = useRef<number | null>(null);
+  const streamedAnswerRef = useRef("");
   const sessionIdRef = useRef<string>(createSessionId());
   const lastContextPathRef = useRef<string | null>(null);
   const lastContextMessageIdRef = useRef<string | null>(null);
@@ -306,10 +402,18 @@ export default function QuerylessAssistant() {
 
   useEffect(() => {
     const didAddNewMessage = messages.length > previousMessageCountRef.current;
-    const behavior: ScrollBehavior =
-      isSending || !didAddNewMessage ? "auto" : "smooth";
+    if (!shouldAutoScrollRef.current && !didAddNewMessage) {
+      previousMessageCountRef.current = messages.length;
+      return;
+    }
 
-    messagesEndRef.current?.scrollIntoView({ behavior, block: "end" });
+    const container = messagesContainerRef.current;
+    if (!container) {
+      previousMessageCountRef.current = messages.length;
+      return;
+    }
+
+    container.scrollTop = container.scrollHeight;
     previousMessageCountRef.current = messages.length;
   }, [messages, isSending]);
 
@@ -326,6 +430,10 @@ export default function QuerylessAssistant() {
   useEffect(
     () => () => {
       document.body.classList.remove("queryless-drawer-open");
+      if (streamRafRef.current !== null) {
+        window.cancelAnimationFrame(streamRafRef.current);
+        streamRafRef.current = null;
+      }
     },
     []
   );
@@ -392,6 +500,7 @@ export default function QuerylessAssistant() {
 
       const contentType = response.headers.get("content-type") || "";
       let answer = "";
+      streamedAnswerRef.current = "";
 
       if (contentType.includes("text/event-stream") && response.body) {
         const reader = response.body.getReader();
@@ -435,14 +544,20 @@ export default function QuerylessAssistant() {
                 const token = extractTextFromPayload(payload);
                 if (!token) continue;
                 answer += token;
-                const partial = maskIncompleteChartBlock(answer);
-                setMessages(prev =>
-                  prev.map(message =>
-                    message.id === assistantMessageId
-                      ? { ...message, content: partial }
-                      : message
-                  )
-                );
+                streamedAnswerRef.current = answer;
+                if (streamRafRef.current === null) {
+                  streamRafRef.current = window.requestAnimationFrame(() => {
+                    const partial = maskIncompleteChartBlock(streamedAnswerRef.current);
+                    setMessages(prev =>
+                      prev.map(message =>
+                        message.id === assistantMessageId
+                          ? { ...message, content: partial }
+                          : message
+                      )
+                    );
+                    streamRafRef.current = null;
+                  });
+                }
               } catch {
                 // Ignore non-JSON stream frames
               }
@@ -461,6 +576,10 @@ export default function QuerylessAssistant() {
       if (!answer || typeof answer !== "string") {
         throw new Error("Queryless response did not include a text answer");
       }
+      if (streamRafRef.current !== null) {
+        window.cancelAnimationFrame(streamRafRef.current);
+        streamRafRef.current = null;
+      }
       setMessages(prev =>
         prev.map(message =>
           message.id === assistantMessageId
@@ -472,6 +591,10 @@ export default function QuerylessAssistant() {
         )
       );
     } catch (err) {
+      if (streamRafRef.current !== null) {
+        window.cancelAnimationFrame(streamRafRef.current);
+        streamRafRef.current = null;
+      }
       console.error("[Queryless] Chat request failed", {
         error: err,
         pageDirective: context.pageDirective,
@@ -575,9 +698,18 @@ export default function QuerylessAssistant() {
                 </div>
               </div>
 
-              <div className="h-full min-h-0">
+                <div className="h-full min-h-0">
                 <div className="flex h-full flex-col">
-                  <div className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
+                  <div
+                    ref={messagesContainerRef}
+                    onScroll={event => {
+                      const container = event.currentTarget;
+                      const distanceFromBottom =
+                        container.scrollHeight - container.scrollTop - container.clientHeight;
+                      shouldAutoScrollRef.current = distanceFromBottom < 56;
+                    }}
+                    className="flex-1 space-y-3 overflow-y-auto px-4 py-4"
+                  >
                     {messages.map(message => (
                       (() => {
                         const isEmptyAssistantMessage =
@@ -607,91 +739,7 @@ export default function QuerylessAssistant() {
                             }`}
                           >
                             {message.role === "assistant" && message.variant !== "context" ? (
-                              <>
-                                <ReactMarkdown
-                                  remarkPlugins={[remarkGfm]}
-                                  components={{
-                                    p: ({ node, ...props }) => (
-                                      <p className="mb-2 last:mb-0" {...props} />
-                                    ),
-                                    a: ({ node, ...props }) =>
-                                      isLocalLink(props.href) ? (
-                                        <Link
-                                          href={props.href || "/"}
-                                          className="underline text-sky-700 hover:text-sky-800"
-                                        >
-                                          {props.children}
-                                        </Link>
-                                      ) : (
-                                        <a
-                                          {...props}
-                                          className="underline text-sky-700 hover:text-sky-800"
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                        />
-                                      ),
-                                    ul: ({ node, ...props }) => (
-                                      <ul className="mb-2 list-disc pl-5 last:mb-0" {...props} />
-                                    ),
-                                    ol: ({ node, ...props }) => (
-                                      <ol className="mb-2 list-decimal pl-5 last:mb-0" {...props} />
-                                    ),
-                                    li: ({ node, ...props }) => (
-                                      <li className="mb-1 last:mb-0" {...props} />
-                                    ),
-                                    table: ({ node, ...props }) => (
-                                      <div className="mb-2 overflow-x-auto last:mb-0">
-                                        <table
-                                          className="w-full border-collapse border border-slate-300 text-xs"
-                                          {...props}
-                                        />
-                                      </div>
-                                    ),
-                                    thead: ({ node, ...props }) => (
-                                      <thead className="bg-slate-200" {...props} />
-                                    ),
-                                    th: ({ node, ...props }) => (
-                                      <th
-                                        className="border border-slate-300 px-2 py-1 text-left font-semibold"
-                                        {...props}
-                                      />
-                                    ),
-                                    td: ({ node, ...props }) => (
-                                      <td className="border border-slate-300 px-2 py-1" {...props} />
-                                    ),
-                                    code: ({ node, inline, className, children, ...props }) =>
-                                      inline ? (
-                                        <code
-                                          className="rounded bg-slate-200 px-1 py-0.5"
-                                          {...props}
-                                        />
-                                      ) : (
-                                        (() => {
-                                          const language = (className || "").replace("language-", "");
-                                          const isChartBlock =
-                                            language === "chart" || language === "vega";
-
-                                          if (isChartBlock) {
-                                            const specText = String(children).trim();
-                                            if (parseVegaSpecText(specText)) {
-                                              return <VegaSpecRenderer specText={specText} />;
-                                            }
-                                          }
-
-                                          return (
-                                            <pre className="mb-2 overflow-x-auto rounded bg-slate-900 p-2 text-slate-100 last:mb-0">
-                                              <code className={className} {...props}>
-                                                {children}
-                                              </code>
-                                            </pre>
-                                          );
-                                        })()
-                                      ),
-                                  }}
-                                >
-                                  {message.content}
-                                </ReactMarkdown>
-                              </>
+                              <AssistantMessageBody content={message.content} />
                             ) : (
                               message.content
                             )}
