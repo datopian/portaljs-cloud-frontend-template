@@ -16,11 +16,7 @@ function uniqueFormat(resources) {
   return [...new Set(formats)];
 }
 
-export default function DatasetInfo({
-  dataset,
-}: {
-  dataset: Dataset;
-}) {
+export default function DatasetInfo({ dataset }: { dataset: Dataset }) {
   const [isTruncated, setIsTruncated] = useState(false);
   const [showFullDescription, setShowFullDescription] = useState(false);
   const textRef = useRef<HTMLParagraphElement>(null);
@@ -33,6 +29,26 @@ export default function DatasetInfo({
     { format: "rdf", label: "RDF" },
     { format: "ttl", label: "TTL" },
   ];
+
+  const dmsUrl = process.env.NEXT_PUBLIC_DMS || "";
+  const { dmsBaseUrl, dmsDatasetName } = (() => {
+    if (!dmsUrl) {
+      return { dmsBaseUrl: "", dmsDatasetName: dataset.name };
+    }
+
+    try {
+      const url = new URL(dmsUrl);
+      const orgPath = url.pathname.replace(/^\/+|\/+$/g, "");
+      const orgName = orgPath.startsWith("@") ? orgPath.slice(1) : orgPath;
+
+      return {
+        dmsBaseUrl: url.origin,
+        dmsDatasetName: orgName ? `${orgName}--${dataset.name}` : dataset.name,
+      };
+    } catch {
+      return { dmsBaseUrl: dmsUrl, dmsDatasetName: dataset.name };
+    }
+  })();
 
   useEffect(() => {
     const el = textRef.current;
@@ -212,7 +228,7 @@ export default function DatasetInfo({
           {metaFormats.map((item) => (
             <div key={item.format}>
               <Link
-                href={`${process.env.NEXT_PUBLIC_DMS}/dataset/${dataset.name}.${item.format}`}
+                href={`${dmsBaseUrl}/dataset/${dmsDatasetName}.${item.format}`}
                 className="font-semibold group flex gap-0.5 hover:text-darkaccent"
               >
                 <div className="text-accent group-hover:text-darkaccent transition flex items-center justify-center">
