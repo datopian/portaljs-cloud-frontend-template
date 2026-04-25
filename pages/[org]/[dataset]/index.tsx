@@ -3,17 +3,14 @@ import DatasetInfo from "@/components/dataset/individualPage/DatasetInfo";
 import DatasetOverview from "@/components/dataset/individualPage/DatasetOverview";
 import DatasetNavCrumbs from "@/components/dataset/individualPage/NavCrumbs";
 import ResourcesList from "@/components/dataset/individualPage/ResourcesList";
-import ActivityStream from "@/components/_shared/ActivityStream";
 import Layout from "@/components/_shared/Layout";
 import Tabs from "@/components/_shared/Tabs";
-import { CKAN } from "@portaljs/ckan";
 import styles from "styles/DatasetInfo.module.scss";
 import { getDataset } from "@/lib/queries/dataset";
 import HeroSection from "@/components/_shared/HeroSection";
 import { DatasetPageStructuredData } from "@/components/schema/DatasetPageStructuredData";
 
 export const getServerSideProps: GetServerSideProps = async (context) => {
-  const ckan = new CKAN(process.env.NEXT_PUBLIC_DMS);
   const datasetName = context.params?.dataset as string;
   const orgName = context.params?.org as string;
 
@@ -30,11 +27,6 @@ export const getServerSideProps: GetServerSideProps = async (context) => {
         notFound: true,
       };
     }
-    const activityStream = await ckan.getDatasetActivityStream(datasetName);
-    dataset = {
-      ...dataset,
-      activity_stream: activityStream,
-    };
 
     if (!dataset.organization || "@" + dataset.organization.name !== orgName) {
       return {
@@ -75,15 +67,6 @@ export default function DatasetPage({ dataset }): JSX.Element {
       id: "information",
       content: <DatasetOverview dataset={dataset} />,
       title: "Info",
-    },
-    {
-      id: "activity-stream",
-      content: (
-        <ActivityStream
-          activities={dataset?.activity_stream ? dataset.activity_stream : []}
-        />
-      ),
-      title: "Activity Stream",
     },
   ];
   return (

@@ -1,4 +1,4 @@
-import { Activity, Group, Organization, Tag } from "@portaljs/ckan";
+import { Group, Organization, Tag } from "@portaljs/ckan";
 import { Resource } from "./resource.interface";
 
 export interface Dataset {
@@ -26,7 +26,6 @@ export interface Dataset {
     external_url?: string;
     url?: string;
     version?: string;
-    activity_stream?: Array<Activity>;
     resources: Array<Resource>;
     organization?: Organization;
     groups?: Array<Group>;
