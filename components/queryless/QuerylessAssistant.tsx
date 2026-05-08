@@ -790,15 +790,21 @@ export default function QuerylessAssistant() {
                       </button>
                     </div>
                     <p className="mt-2 text-center text-xs text-slate-500">
-                      Powered by{" "}
                       <a
                         href="https://querylessai.com/"
                         target="_blank"
                         rel="noopener noreferrer"
                         className="underline hover:text-slate-700"
                       >
-                        querylessai.com
-                      </a>
+                        QuerylessAI
+                      </a>{" "}
+                      can make mistakes. <br /> By using this chat you accept the{" "}
+                      <Link
+                        href="/ai-terms-of-use"
+                        className="underline hover:text-slate-700"
+                      >
+                        AI Terms of Use
+                      </Link>.
                     </p>
                   </div>
                 </div>
