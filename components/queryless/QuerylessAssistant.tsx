@@ -24,6 +24,11 @@ type ChatMessage = {
   variant?: "default" | "context";
 };
 
+type ParsedAssistantContent = {
+  mainContent: string;
+  methodContent: string | null;
+};
+
 function getPageDirective(
   pathname: string,
   asPath: string
@@ -144,95 +149,222 @@ function maskIncompleteChartBlock(content: string): string {
   return content;
 }
 
+function maskIncompleteAuxiliaryBlocks(content: string): string {
+  const methodStart = content.lastIndexOf("[[QUERYLESS_METHOD]]");
+  const methodEnd = content.indexOf(
+    "[[/QUERYLESS_METHOD]]",
+    Math.max(0, methodStart)
+  );
+  if (methodStart !== -1 && methodEnd === -1) {
+    return content.slice(0, methodStart).trimEnd();
+  }
+
+  return content;
+}
+
+function parseAssistantContent(content: string): ParsedAssistantContent {
+  let mainContent = content;
+  let methodContent: string | null = null;
+
+  const methodMatch = mainContent.match(
+    /\[\[QUERYLESS_METHOD\]\]\s*([\s\S]*?)\s*\[\[\/QUERYLESS_METHOD\]\]/
+  );
+  if (methodMatch?.[1]) {
+    methodContent = methodMatch[1].trim();
+    mainContent = mainContent.replace(methodMatch[0], "").trim();
+  }
+
+  return {
+    mainContent,
+    methodContent,
+  };
+}
+
+function isInlineCodeNode(className: string | undefined, children: React.ReactNode) {
+  const text = String(children);
+  return !className && !text.includes("\n");
+}
+
 const AssistantMessageBody = memo(function AssistantMessageBody({
   content,
 }: {
   content: string;
 }) {
+  const { mainContent, methodContent } = useMemo(
+    () => parseAssistantContent(content),
+    [content]
+  );
+
   return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      components={{
-        p: ({ node, ...props }) => (
-          <p className="mb-2 last:mb-0" {...props} />
-        ),
-        a: ({ node, ...props }) =>
-          isLocalLink(props.href) ? (
-            <Link
-              href={props.href || "/"}
-              className="underline text-sky-700 hover:text-sky-800"
+    <div className="space-y-2">
+      {mainContent ? (
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={{
+            p: ({ node, ...props }) => (
+              <p className="mb-2 last:mb-0" {...props} />
+            ),
+            a: ({ node, ...props }) =>
+              isLocalLink(props.href) ? (
+                <Link
+                  href={props.href || "/"}
+                  className="underline text-sky-700 hover:text-sky-800"
+                >
+                  {props.children}
+                </Link>
+              ) : (
+                <a
+                  {...props}
+                  className="underline text-sky-700 hover:text-sky-800"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                />
+              ),
+            ul: ({ node, ...props }) => (
+              <ul className="mb-2 list-disc pl-5 last:mb-0" {...props} />
+            ),
+            ol: ({ node, ...props }) => (
+              <ol className="mb-2 list-decimal pl-5 last:mb-0" {...props} />
+            ),
+            li: ({ node, ...props }) => (
+              <li className="mb-1 last:mb-0" {...props} />
+            ),
+            table: ({ node, ...props }) => (
+              <div className="mb-2 overflow-x-auto last:mb-0">
+                <table
+                  className="w-full border-collapse border border-slate-300 text-xs"
+                  {...props}
+                />
+              </div>
+            ),
+            thead: ({ node, ...props }) => (
+              <thead className="bg-slate-200" {...props} />
+            ),
+            th: ({ node, ...props }) => (
+              <th
+                className="border border-slate-300 px-2 py-1 text-left font-semibold"
+                {...props}
+              />
+            ),
+            td: ({ node, ...props }) => (
+              <td className="border border-slate-300 px-2 py-1" {...props} />
+            ),
+            code: ({ node, inline, className, children, ...props }) =>
+              isInlineCodeNode(className, children) ? (
+                <code
+                  className="rounded bg-slate-200 px-1 py-0.5"
+                  {...props}
+                >
+                  {children}
+                </code>
+              ) : (
+                (() => {
+                  const language = (className || "").replace("language-", "");
+                  const isChartBlock =
+                    language === "chart" || language === "vega";
+
+                  if (isChartBlock) {
+                    const specText = String(children).trim();
+                    if (parseVegaSpecText(specText)) {
+                      return <VegaSpecRenderer specText={specText} />;
+                    }
+                  }
+
+                  return (
+                    <pre className="mb-2 overflow-x-auto rounded bg-slate-900 p-2 text-slate-100 last:mb-0">
+                      <code className={className} {...props}>
+                        {children}
+                      </code>
+                    </pre>
+                  );
+                })()
+              ),
+          }}
+        >
+          {mainContent}
+        </ReactMarkdown>
+      ) : null}
+
+      {methodContent ? (
+        <details className="rounded-xl border border-slate-200 bg-white/70 px-3 py-2">
+          <summary className="cursor-pointer text-sm font-medium text-slate-700">
+            How this was calculated
+          </summary>
+          <div className="mt-2 text-slate-700">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                p: ({ node, ...props }) => (
+                  <p className="mb-2 last:mb-0" {...props} />
+                ),
+                a: ({ node, ...props }) =>
+                  isLocalLink(props.href) ? (
+                    <Link
+                      href={props.href || "/"}
+                      className="underline text-sky-700 hover:text-sky-800"
+                    >
+                      {props.children}
+                    </Link>
+                  ) : (
+                    <a
+                      {...props}
+                      className="underline text-sky-700 hover:text-sky-800"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    />
+                  ),
+                ul: ({ node, ...props }) => (
+                  <ul className="mb-2 list-disc pl-5 last:mb-0" {...props} />
+                ),
+                ol: ({ node, ...props }) => (
+                  <ol className="mb-2 list-decimal pl-5 last:mb-0" {...props} />
+                ),
+                li: ({ node, ...props }) => (
+                  <li className="mb-1 last:mb-0" {...props} />
+                ),
+                table: ({ node, ...props }) => (
+                  <div className="mb-2 overflow-x-auto last:mb-0">
+                    <table
+                      className="w-full border-collapse border border-slate-300 text-xs"
+                      {...props}
+                    />
+                  </div>
+                ),
+                thead: ({ node, ...props }) => (
+                  <thead className="bg-slate-200" {...props} />
+                ),
+                th: ({ node, ...props }) => (
+                  <th
+                    className="border border-slate-300 px-2 py-1 text-left font-semibold"
+                    {...props}
+                  />
+                ),
+                td: ({ node, ...props }) => (
+                  <td className="border border-slate-300 px-2 py-1" {...props} />
+                ),
+                code: ({ node, inline, className, children, ...props }) =>
+                  isInlineCodeNode(className, children) ? (
+                    <code
+                      className="rounded bg-slate-200 px-1 py-0.5"
+                      {...props}
+                    >
+                      {children}
+                    </code>
+                  ) : (
+                    <pre className="mb-2 overflow-x-auto rounded bg-slate-900 p-2 text-slate-100 last:mb-0">
+                      <code className={className} {...props}>
+                        {children}
+                      </code>
+                    </pre>
+                ),
+              }}
             >
-              {props.children}
-            </Link>
-          ) : (
-            <a
-              {...props}
-              className="underline text-sky-700 hover:text-sky-800"
-              target="_blank"
-              rel="noopener noreferrer"
-            />
-          ),
-        ul: ({ node, ...props }) => (
-          <ul className="mb-2 list-disc pl-5 last:mb-0" {...props} />
-        ),
-        ol: ({ node, ...props }) => (
-          <ol className="mb-2 list-decimal pl-5 last:mb-0" {...props} />
-        ),
-        li: ({ node, ...props }) => (
-          <li className="mb-1 last:mb-0" {...props} />
-        ),
-        table: ({ node, ...props }) => (
-          <div className="mb-2 overflow-x-auto last:mb-0">
-            <table
-              className="w-full border-collapse border border-slate-300 text-xs"
-              {...props}
-            />
+              {methodContent}
+            </ReactMarkdown>
           </div>
-        ),
-        thead: ({ node, ...props }) => (
-          <thead className="bg-slate-200" {...props} />
-        ),
-        th: ({ node, ...props }) => (
-          <th
-            className="border border-slate-300 px-2 py-1 text-left font-semibold"
-            {...props}
-          />
-        ),
-        td: ({ node, ...props }) => (
-          <td className="border border-slate-300 px-2 py-1" {...props} />
-        ),
-        code: ({ node, inline, className, children, ...props }) =>
-          inline ? (
-            <code
-              className="rounded bg-slate-200 px-1 py-0.5"
-              {...props}
-            />
-          ) : (
-            (() => {
-              const language = (className || "").replace("language-", "");
-              const isChartBlock =
-                language === "chart" || language === "vega";
-
-              if (isChartBlock) {
-                const specText = String(children).trim();
-                if (parseVegaSpecText(specText)) {
-                  return <VegaSpecRenderer specText={specText} />;
-                }
-              }
-
-              return (
-                <pre className="mb-2 overflow-x-auto rounded bg-slate-900 p-2 text-slate-100 last:mb-0">
-                  <code className={className} {...props}>
-                    {children}
-                  </code>
-                </pre>
-              );
-            })()
-          ),
-      }}
-    >
-      {content}
-    </ReactMarkdown>
+        </details>
+      ) : null}
+    </div>
   );
 });
 
@@ -547,7 +679,9 @@ export default function QuerylessAssistant() {
                 streamedAnswerRef.current = answer;
                 if (streamRafRef.current === null) {
                   streamRafRef.current = window.requestAnimationFrame(() => {
-                    const partial = maskIncompleteChartBlock(streamedAnswerRef.current);
+                    const partial = maskIncompleteAuxiliaryBlocks(
+                      maskIncompleteChartBlock(streamedAnswerRef.current)
+                    );
                     setMessages(prev =>
                       prev.map(message =>
                         message.id === assistantMessageId
