@@ -11,6 +11,11 @@ const QUERYLESS_API_ROUTE =
   process.env.NEXT_PUBLIC_QUERYLESS_API_ROUTE || "/api/queryless-chat";
 const QUERYLESS_STORAGE_KEY = "queryless:enabled";
 const QUERYLESS_OPEN_STORAGE_KEY = "queryless:open";
+const QUERYLESS_RATE_LIMIT_STORAGE_KEY = "queryless:rate-limit";
+const QUERYLESS_DAILY_LIMIT_STORAGE_KEY = "queryless:daily-limit";
+const QUERYLESS_RATE_LIMIT_MAX_REQUESTS = 4;
+const QUERYLESS_RATE_LIMIT_WINDOW_MS = 60_000;
+const QUERYLESS_DAILY_LIMIT_MAX_REQUESTS = 20;
 
 type QuerylessContext = {
   path: string;
@@ -183,6 +188,106 @@ function parseAssistantContent(content: string): ParsedAssistantContent {
 function isInlineCodeNode(className: string | undefined, children: React.ReactNode) {
   const text = String(children);
   return !className && !text.includes("\n");
+}
+
+function getRecentQuestionTimestamps(now = Date.now()): number[] {
+  if (typeof window === "undefined") return [];
+
+  const raw = window.localStorage.getItem(QUERYLESS_RATE_LIMIT_STORAGE_KEY);
+  if (!raw) return [];
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed.filter(
+      (value): value is number =>
+        typeof value === "number" && now - value < QUERYLESS_RATE_LIMIT_WINDOW_MS
+    );
+  } catch {
+    return [];
+  }
+}
+
+function persistQuestionTimestamps(timestamps: number[]) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(
+    QUERYLESS_RATE_LIMIT_STORAGE_KEY,
+    JSON.stringify(timestamps)
+  );
+}
+
+function getRateLimitState(now = Date.now()) {
+  const recent = getRecentQuestionTimestamps(now);
+  const isLimited = recent.length >= QUERYLESS_RATE_LIMIT_MAX_REQUESTS;
+  const retryAt = isLimited ? recent[0] + QUERYLESS_RATE_LIMIT_WINDOW_MS : null;
+
+  return {
+    recent,
+    isLimited,
+    retryAt,
+  };
+}
+
+function formatRateLimitMessage(retryAt: number | null, now = Date.now()) {
+  if (!retryAt) return null;
+  const secondsRemaining = Math.max(1, Math.ceil((retryAt - now) / 1000));
+  return `Rate limit reached: ${QUERYLESS_RATE_LIMIT_MAX_REQUESTS} questions per ${Math.round(
+    QUERYLESS_RATE_LIMIT_WINDOW_MS / 1000
+  )} seconds. Try again in ${secondsRemaining}s.`;
+}
+
+function getDailyUsagePillClassName(count: number) {
+  if (count >= QUERYLESS_DAILY_LIMIT_MAX_REQUESTS) {
+    return "bg-red-100 text-red-700";
+  }
+  if (count >= QUERYLESS_DAILY_LIMIT_MAX_REQUESTS * 0.75) {
+    return "bg-amber-100 text-amber-700";
+  }
+  return "bg-slate-100 text-slate-600";
+}
+
+function getLocalDateKey(now = new Date()) {
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getDailyUsageState(now = new Date()) {
+  if (typeof window === "undefined") {
+    return { dateKey: getLocalDateKey(now), count: 0, isLimited: false };
+  }
+
+  const dateKey = getLocalDateKey(now);
+  const raw = window.localStorage.getItem(QUERYLESS_DAILY_LIMIT_STORAGE_KEY);
+
+  if (!raw) {
+    return { dateKey, count: 0, isLimited: false };
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed?.dateKey !== dateKey || typeof parsed?.count !== "number") {
+      return { dateKey, count: 0, isLimited: false };
+    }
+
+    return {
+      dateKey,
+      count: parsed.count,
+      isLimited: parsed.count >= QUERYLESS_DAILY_LIMIT_MAX_REQUESTS,
+    };
+  } catch {
+    return { dateKey, count: 0, isLimited: false };
+  }
+}
+
+function persistDailyUsage(dateKey: string, count: number) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(
+    QUERYLESS_DAILY_LIMIT_STORAGE_KEY,
+    JSON.stringify({ dateKey, count })
+  );
 }
 
 const AssistantMessageBody = memo(function AssistantMessageBody({
@@ -383,6 +488,9 @@ export default function QuerylessAssistant() {
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [rateLimitMessage, setRateLimitMessage] = useState<string | null>(null);
+  const [rateLimitRetryAt, setRateLimitRetryAt] = useState<number | null>(null);
+  const [dailyUsageCount, setDailyUsageCount] = useState(0);
   const [viewingNotice, setViewingNotice] = useState("Viewing search");
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -411,7 +519,43 @@ export default function QuerylessAssistant() {
     if (wasOpen === "true") {
       setIsOpen(true);
     }
+
+    const { isLimited, retryAt } = getRateLimitState();
+    const dailyUsage = getDailyUsageState();
+    setDailyUsageCount(dailyUsage.count);
+    setRateLimitRetryAt(retryAt);
+    setRateLimitMessage(
+      dailyUsage.isLimited
+        ? `Daily limit reached: ${QUERYLESS_DAILY_LIMIT_MAX_REQUESTS} questions used today. Try again tomorrow.`
+        : isLimited
+          ? formatRateLimitMessage(retryAt)
+          : null
+    );
   }, []);
+
+  useEffect(() => {
+    if (!rateLimitRetryAt && !rateLimitMessage) return;
+
+    const updateRateLimit = () => {
+      const { isLimited, retryAt } = getRateLimitState();
+      const dailyUsage = getDailyUsageState();
+      setDailyUsageCount(dailyUsage.count);
+      setRateLimitRetryAt(retryAt);
+      setRateLimitMessage(
+        dailyUsage.isLimited
+          ? `Daily limit reached: ${QUERYLESS_DAILY_LIMIT_MAX_REQUESTS} questions used today. Try again tomorrow.`
+          : isLimited
+            ? formatRateLimitMessage(retryAt)
+            : null
+      );
+    };
+
+    updateRateLimit();
+    const timer = window.setInterval(updateRateLimit, 1000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [rateLimitRetryAt]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -573,6 +717,23 @@ export default function QuerylessAssistant() {
   const sendMessage = async () => {
     const question = input.trim();
     if (!question || isSending) return;
+
+    const dailyUsage = getDailyUsageState();
+    if (dailyUsage.isLimited) {
+      setDailyUsageCount(dailyUsage.count);
+      setRateLimitMessage(
+        `Daily limit reached: ${QUERYLESS_DAILY_LIMIT_MAX_REQUESTS} questions used today. Try again tomorrow.`
+      );
+      return;
+    }
+
+    const now = Date.now();
+    const { recent, isLimited, retryAt } = getRateLimitState(now);
+    if (isLimited) {
+      setRateLimitRetryAt(retryAt);
+      setRateLimitMessage(formatRateLimitMessage(retryAt, now));
+      return;
+    }
     hasExchangeSinceLastPageChangeRef.current = true;
     const assistantMessageId = `assistant-${Date.now()}`;
 
@@ -714,6 +875,17 @@ export default function QuerylessAssistant() {
         window.cancelAnimationFrame(streamRafRef.current);
         streamRafRef.current = null;
       }
+      const successTimestamp = Date.now();
+      const successRecent = getRecentQuestionTimestamps(successTimestamp);
+      persistQuestionTimestamps([...successRecent, successTimestamp]);
+      const successDailyUsage = getDailyUsageState();
+      persistDailyUsage(
+        successDailyUsage.dateKey,
+        successDailyUsage.count + 1
+      );
+      setDailyUsageCount(successDailyUsage.count + 1);
+      setRateLimitRetryAt(null);
+      setRateLimitMessage(null);
       setMessages(prev =>
         prev.map(message =>
           message.id === assistantMessageId
@@ -900,6 +1072,25 @@ export default function QuerylessAssistant() {
                     {error && (
                       <p className="mb-2 text-xs text-red-600">{error}</p>
                     )}
+                    {rateLimitMessage && (
+                      <p className="mb-2 text-xs text-amber-700">
+                        {rateLimitMessage}
+                      </p>
+                    )}
+                    <div className="mb-2">
+                      <div className="group relative inline-flex">
+                      <span
+                        className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${getDailyUsagePillClassName(
+                          dailyUsageCount
+                        )}`}
+                      >
+                        Daily questions: {dailyUsageCount} / {QUERYLESS_DAILY_LIMIT_MAX_REQUESTS}
+                      </span>
+                        <span className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-2 w-max max-w-[220px] -translate-x-1/2 rounded bg-slate-900 px-2 py-1 text-[11px] text-white opacity-0 shadow transition-opacity group-hover:opacity-100">
+                          You can ask up to {QUERYLESS_DAILY_LIMIT_MAX_REQUESTS} questions per day.
+                        </span>
+                      </div>
+                    </div>
                     <div className="flex items-center gap-2">
                       <input
                         type="text"
@@ -917,7 +1108,7 @@ export default function QuerylessAssistant() {
                       <button
                         type="button"
                         onClick={() => void sendMessage()}
-                        disabled={isSending || !input.trim()}
+                        disabled={isSending || !input.trim() || Boolean(rateLimitMessage)}
                         className="rounded-md bg-sky-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         Send
